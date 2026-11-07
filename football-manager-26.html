@@ -469,6 +469,16 @@ select:focus,input:focus{outline:none;border-color:#6366f1}
               <div class="card-h">📜 Histórico de temporadas</div>
               <div class="card-b"><div id="history" class="list"></div></div>
             </div>
+            <div class="card">
+              <div class="card-h">🛠️ Diagnóstico</div>
+              <div class="card-b">
+                <p class="small muted">Registra erros e avisos do jogo. Se algo travar, copie o texto e envie para o Claude.</p>
+                <pre id="diag-log" class="small" style="white-space:pre-wrap;max-height:240px;overflow:auto;background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px">Nenhum erro ou aviso registrado.</pre>
+                <button class="btn btn-ok full" onclick="copyDiag()">Copiar diagnóstico</button>
+                <button class="btn btn-ghost full" onclick="clearDiag()">Limpar</button>
+                <p id="diag-msg" class="small muted"></p>
+              </div>
+            </div>
           </div>
           <div class="card">
             <div class="card-h">⚙️ Carreira</div>
@@ -588,12 +598,58 @@ select:focus,input:focus{outline:none;border-color:#6366f1}
 
 <script>
 // Mostra erros de execução na tela (Safari mascara erros de scripts "Script error")
+// Registro de diagnóstico: erros, promessas rejeitadas, console.error e console.warn
+const DIAG = [];
+function diagStr(v) {
+  if (v instanceof Error) return v.stack || v.message;
+  if (v && typeof v === 'object') { try { return JSON.stringify(v); } catch (_) { return String(v); } }
+  return String(v);
+}
+function diagPush(tipo, texto) {
+  DIAG.push('[' + new Date().toLocaleTimeString('pt-BR') + '] ' + tipo + ': ' + texto);
+  if (DIAG.length > 200) DIAG.shift();
+  renderDiag();
+}
 window.addEventListener('error', function (e) {
+  diagPush('ERRO', (e.message || 'desconhecido') + ' | linha ' + (e.lineno || '?') + ':' + (e.colno || '?') + (e.filename ? ' | ' + e.filename : ''));
   var d = document.createElement('pre');
-  d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;max-height:40vh;overflow:auto;background:#7f1d1d;color:#fff;font-size:12px;padding:10px;z-index:999;white-space:pre-wrap';
-  d.textContent = 'Erro: ' + (e.message || 'desconhecido') + ' | linha ' + (e.lineno || '?');
+  d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;max-height:30vh;overflow:auto;background:#7f1d1d;color:#fff;font-size:12px;padding:10px;z-index:999;white-space:pre-wrap';
+  d.textContent = 'Erro: ' + (e.message || 'desconhecido') + ' | linha ' + (e.lineno || '?') + ' (toque para fechar)';
+  d.onclick = function () { d.remove(); };
   document.body.appendChild(d);
 });
+window.addEventListener('unhandledrejection', function (e) {
+  diagPush('PROMESSA', diagStr(e.reason));
+});
+['error', 'warn'].forEach(function (nivel) {
+  var original = console[nivel].bind(console);
+  console[nivel] = function () {
+    diagPush(nivel.toUpperCase(), Array.prototype.map.call(arguments, diagStr).join(' '));
+    original.apply(null, arguments);
+  };
+});
+function renderDiag() {
+  var el = document.getElementById('diag-log');
+  if (el) el.textContent = DIAG.length ? DIAG.join('\n') : 'Nenhum erro ou aviso registrado.';
+}
+function copyDiag() {
+  var texto = DIAG.length ? DIAG.join('\n') : 'Nenhum erro ou aviso registrado.';
+  var msg = document.getElementById('diag-msg');
+  function fallback() {
+    var ta = document.createElement('textarea');
+    ta.value = texto;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); msg.textContent = 'Copiado.'; } catch (_) { msg.textContent = 'Não consegui copiar. Selecione o texto da caixa acima.'; }
+    ta.remove();
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(texto).then(function () { msg.textContent = 'Copiado.'; }, fallback);
+  } else {
+    fallback();
+  }
+}
+function clearDiag() { DIAG.length = 0; renderDiag(); }
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const fmtM = v => '€' + (v / 1e6).toFixed(1) + 'M';
@@ -719,7 +775,9 @@ function renderStartMenu() {
   const saved = readSave();
   $('continue-card').hidden = !saved;
   if (saved) {
-    $('cont-title').textContent = `${nm(saved.myId)}`;
+    // state.teams só existe depois de iniciar a carreira; usa a lista da própria carreira salva
+    const meu = (saved.teams || []).find(t => t.id === saved.myId);
+    $('cont-title').textContent = meu ? meu.name : 'Carreira salva';
     $('cont-sub').textContent = `Temporada ${saved.season}`;
   }
 }
@@ -930,7 +988,7 @@ function openPlayer(id) {
         <div class="row-item"><span>Valor</span><b class="green">${fmtM(p.value)}</b></div>
         <div class="row-item"><span>Salário</span><b>${fmtEur(p.wage)}/sem.</b></div>
       </div>
-      <p class="small muted">${starter ? 'Titular.' : 'Reserva. Toque em uma posição no campo para escalá-lo.'}</p>`,
+      <p class="small muted">${starter ? 'Titular. Toque na posição dele no campo para trocar.' : 'Reserva. Toque em uma posição no campo para escalá-lo.'}</p>`,
     buttons
   });
 }
@@ -1561,7 +1619,7 @@ function renderSquad() {
   const F = FORMATIONS[state.formation];
   $('field').innerHTML = F.slots.map(([cat, top, left], i) => {
     const p = mySquad().find(x => x.slot === i);
-    return `<button class="slot" style="top:${top}%;left:${left}%" onclick="${p ? `openPlayer(${p.id})` : `openSlot(${i})`}">
+    return `<button class="slot" style="top:${top}%;left:${left}%" onclick="openSlot(${i})">
       <span class="dot ${p ? 'filled' : ''}">${p ? p.rat : '+'}</span>
       <span class="tag">${p ? p.name.split(' ').pop() : 'Vazio'}</span>
     </button>`;
@@ -1723,6 +1781,7 @@ function renderClub() {
   $('ns-hint').textContent = ready
     ? 'A temporada terminou. Os jogadores envelhecem e o mercado é renovado.'
     : 'Disponível quando a temporada terminar.';
+  renderDiag();
 }
 
 // ---------- Início ----------
