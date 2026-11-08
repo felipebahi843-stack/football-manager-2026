@@ -270,6 +270,7 @@ select:focus,input:focus{outline:none;border-color:#6366f1}
       <div id="club-grid" class="club-grid"></div>
     </div>
     <div id="loading" class="loading" hidden><div class="spinner"></div>Carregando temporada...</div>
+    <p id="versao" class="small muted" style="text-align:center;margin:14px 0 4px"></p>
   </div>
 </div>
 
@@ -789,7 +790,10 @@ function notify(icon, title, html) {
 }
 
 // ---------- Menu inicial ----------
+// Versão exibida no menu: confira se é a última antes de jogar
+const VERSAO = 'Versão 7 · 2026-11-07 · Championship + League One';
 function renderStartMenu() {
+  $('versao').textContent = VERSAO;
   $('club-grid').innerHTML = CLUB_DATA.map(([id, name, budget, wage]) => `
     <button class="club-card" onclick="startCareer('${id}')">
       <span class="tag-premier">Premier</span>
