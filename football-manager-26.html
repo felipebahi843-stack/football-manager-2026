@@ -389,6 +389,8 @@ select:focus,input:focus{outline:none;border-color:#6366f1}
           <div><h2>Tabela</h2><p class="muted">Classificação da liga, chaveamento da FA Cup e artilharia.</p></div>
           <div class="seg" style="max-width:320px;width:100%">
             <button data-tab="league" onclick="setStandTab('league')">Premier League</button>
+            <button data-tab="ch" onclick="setStandTab('ch')">Championship</button>
+            <button data-tab="l1" onclick="setStandTab('l1')">League One</button>
             <button data-tab="cup" onclick="setStandTab('cup')">FA Cup</button>
           </div>
         </div>
@@ -674,9 +676,19 @@ const CLUB_DATA = [
   ['nottingham', 'Nottingham Forest', 24e6, 0.82e6], ['leicester', 'Leicester Foxes', 22e6, 0.72e6],
   ['ipswich', 'Ipswich Town', 18e6, 0.6e6], ['southampton', 'Southampton Saints', 19e6, 0.62e6]
 ];
+// League One: 24 clubes (ids l1_0..l1_23). Não entra na FA Cup.
+const LEAGUE_ONE = [
+  ['Wigan Athletic', 68], ['Reading', 67], ['Huddersfield', 67], ['Barnsley', 66], ['Rotherham', 66], ['Bolton Wanderers', 68],
+  ['Peterborough', 66], ['Exeter City', 65], ['Lincoln City', 66], ['Port Vale', 65], ['Stockport', 67], ['Wycombe', 65],
+  ['Northampton', 66], ['Bradford City', 65], ['Charlton', 67], ['Mansfield', 65], ['Doncaster', 65], ['Crewe', 65],
+  ['Cambridge', 64], ['Accrington', 64], ['Salford', 66], ['Barrow', 64], ['Harrogate', 64], ['Bromley', 64]
+];
+// Championship: 24 clubes (ids low0..low23). Os 12 primeiros também entram na FA Cup.
 const LOWER_TIER = [
   ['Sunderland', 74], ['Coventry', 73], ['Middlesbrough', 75], ['West Brom', 74], ['Norwich', 73], ['Sheffield United', 76],
-  ['Burnley', 76], ['Luton', 75], ['Watford', 72], ['Derby County', 71], ['QPR', 70], ['Hull City', 72]
+  ['Burnley', 76], ['Luton', 75], ['Watford', 72], ['Derby County', 71], ['QPR', 70], ['Hull City', 72],
+  ['Leeds Whites', 75], ['Sheffield Wednesday', 72], ['Preston', 71], ['Millwall', 70], ['Stoke City', 72], ['Swansea', 71],
+  ['Bristol City', 70], ['Blackburn Rovers', 73], ['Plymouth', 69], ['Oxford', 68], ['Portsmouth', 69], ['Cardiff', 70]
 ];
 const POSITIONS = [
   ['GK','GK'], ['GK','GK'], ['CB','DF'], ['CB','DF'], ['LB','DF'], ['RB','DF'], ['DF','DF'],
@@ -731,9 +743,22 @@ const isMyFixture = f => f.h === state.myId || f.a === state.myId;
 const currentIndex = () => state.calendar.findIndex(i => !i.played);
 const myCupTie = stage => (state.cup[stage] || []).find(t => isMine(t.h) || isMine(t.a));
 const isAlive = stage => !!myCupTie(stage);
-const plTeams = () => state.teams.filter(t => t.pl);
-const sortedTable = () => plTeams().slice().sort((a, b) =>
+const leagueTeams = lg => state.teams.filter(t => t.lg === lg);
+const plTeams = () => leagueTeams('pl');
+const chTeams = () => leagueTeams('ch');
+const sortTable = list => list.slice().sort((a, b) =>
   (b.pts - a.pts) || ((b.gf - b.ga) - (a.gf - a.ga)) || (b.gf - a.gf));
+const sortedTable = () => sortTable(plTeams());
+// Participantes da FA Cup: 20 da Premier League + 12 mais fortes da Championship = 32
+const cupTeamsList = () => [...plTeams(), ...chTeams().slice().sort((a, b) => b.str - a.str).slice(0, 12)];
+// Orçamento e teto salarial de acordo com a divisão
+const tierFigures = (str, lg) => lg === 'pl'
+  ? { budget: 30e6 + (str - 70) * 2e6, wageBudget: 1.3e6 + (str - 70) * 0.05e6 }
+  : lg === 'ch'
+    ? { budget: 6e6 + (str - 70) * 0.5e6, wageBudget: 0.25e6 + (str - 70) * 0.01e6 }
+    : { budget: 2.5e6 + (str - 65) * 0.3e6, wageBudget: 0.12e6 + (str - 65) * 0.005e6 };
+const LG_NAME = { pl: 'Premier League', ch: 'Championship', l1: 'League One' };
+const LG_RANK = { l1: 1, ch: 2, pl: 3 };
 const shuffle = a => {
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -837,9 +862,38 @@ function readSave() {
     return raw ? JSON.parse(raw) : null;
   } catch (e) { return null; }
 }
+// Carreiras salvas antes da Championship: adiciona as divisões e os elencos que faltam.
+// Se a carreira estiver no meio da temporada, a Championship passa a jogar na próxima.
+function migrateSave(saved) {
+  if (!saved.teams) return;
+  saved.teams.forEach(t => {
+    if (!t.lg) t.lg = t.pl ? 'pl' : 'ch';
+    if (t.lg === 'ch' && !t.budget) Object.assign(t, tierFigures(t.str, 'ch'));
+  });
+  const faltam = [
+    ...LOWER_TIER.map(([name, str], i) => ({ id: 'low' + i, name, str, lg: 'ch' })),
+    ...LEAGUE_ONE.map(([name, str], i) => ({ id: 'l1_' + i, name, str, lg: 'l1' }))
+  ];
+  faltam.forEach(f => {
+    if (!saved.teams.some(t => t.id === f.id)) {
+      saved.teams.push({ ...f, ...tierFigures(f.str, f.lg), pts: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 });
+    }
+  });
+  saved.squad = saved.squad || [];
+  let nid = Math.max(0, ...saved.squad.map(p => p.id)) + 1;
+  saved.teams.forEach(t => {
+    if (!saved.squad.some(p => p.clubId === t.id)) {
+      const players = makeSquad(t, nid);
+      nid += players.length;
+      saved.squad.push(...players);
+    }
+  });
+}
+
 function continueSaved() {
   const saved = readSave();
   if (!saved) return;
+  migrateSave(saved);
   stopTimer();
   state = Object.assign(newState(), saved, { match: null });
   state.started = true;
@@ -874,33 +928,44 @@ function backToMenu(silent) {
 function buildTeams() {
   return [
     ...CLUB_DATA.map(([id, name, budget, wageBudget]) => ({
-      id, name, str: strengthOf(budget), budget, wageBudget, pl: true, pts: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0
+      id, name, str: strengthOf(budget), budget, wageBudget, lg: 'pl', pts: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0
     })),
     ...LOWER_TIER.map(([name, str], i) => ({
-      id: 'low' + i, name, str, budget: 0, wageBudget: 0, pl: false, pts: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0
+      id: 'low' + i, name, str, ...tierFigures(str, 'ch'), lg: 'ch', pts: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0
+    })),
+    ...LEAGUE_ONE.map(([name, str], i) => ({
+      id: 'l1_' + i, name, str, ...tierFigures(str, 'l1'), lg: 'l1', pts: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0
     }))
   ];
+}
+
+// Gera o elenco de um clube a partir do id inicial dos jogadores
+function makeSquad(team, firstId) {
+  let id = firstId;
+  const players = POSITIONS.map(([pos, cat]) => {
+    const rat = clamp(team.str + ((id % 5) - 2), 68, 94);
+    const p = {
+      id, clubId: team.id,
+      name: FIRST[(id * 3) % FIRST.length] + ' ' + LAST[(id * 7) % LAST.length],
+      pos, cat, age: 18 + (id % 14), rat,
+      value: Math.round(rat ** 3 * 45), wage: rat * rat * 20, slot: null, goals: 0
+    };
+    id++;
+    return p;
+  });
+  // Folha inicial = 85% do teto: o clube começa dentro das regras
+  const total = players.reduce((s, p) => s + p.wage, 0);
+  const k = (team.wageBudget * 0.85) / total;
+  players.forEach(p => p.wage = Math.round(p.wage * k));
+  return players;
 }
 
 function generateSquads() {
   state.squad = [];
   let id = 1;
-  plTeams().forEach(team => {
-    const players = POSITIONS.map(([pos, cat]) => {
-      const rat = clamp(team.str + ((id % 5) - 2), 68, 94);
-      const p = {
-        id, clubId: team.id,
-        name: FIRST[(id * 3) % FIRST.length] + ' ' + LAST[(id * 7) % LAST.length],
-        pos, cat, age: 18 + (id % 14), rat,
-        value: Math.round(rat ** 3 * 45), wage: rat * rat * 20, slot: null, goals: 0
-      };
-      id++;
-      return p;
-    });
-    // Folha inicial = 85% do teto: o clube começa dentro das regras
-    const total = players.reduce((s, p) => s + p.wage, 0);
-    const k = (team.wageBudget * 0.85) / total;
-    players.forEach(p => p.wage = Math.round(p.wage * k));
+  state.teams.forEach(team => {
+    const players = makeSquad(team, id);
+    id += players.length;
     state.squad.push(...players);
   });
 }
@@ -1010,29 +1075,39 @@ function buildRounds(ids) {
   return rounds;
 }
 
-function buildCalendar() {
-  const first = buildRounds(plTeams().map(t => t.id));
+// Turno e returno: as rodadas da segunda metade invertem mandos
+function leagueRounds(ids) {
+  const first = buildRounds(ids);
   const second = first.map(fx => fx.map(m => ({ h: m.a, a: m.h })));
-  const all = [...first, ...second];
+  return [...first, ...second];
+}
+
+// Premier League (38 rodadas) e Championship (46 rodadas) rodam juntas,
+// uma rodada por item do calendário. Quando a PL acaba, a Championship segue sozinha.
+function buildCalendar() {
+  const pl = leagueRounds(plTeams().map(t => t.id));
+  const ch = leagueRounds(chTeams().map(t => t.id));
+  const l1 = leagueRounds(leagueTeams('l1').map(t => t.id));
+  const total = Math.max(pl.length, ch.length, l1.length);
   const cal = [];
-  all.forEach((fx, i) => {
-    const n = i + 1;
+  for (let n = 1; n <= total; n++) {
+    const fx = [...(pl[n - 1] || []), ...(ch[n - 1] || []), ...(l1[n - 1] || [])];
     cal.push({
-      type: 'LIGA', title: `Premier League - Rodada ${n}`,
+      type: 'LIGA', title: `Rodada ${n}`,
       fixtures: fx.map(m => ({ h: m.h, a: m.a, sh: null, sa: null })), played: false
     });
     if (CUP_AFTER_ROUND[n]) {
       const stage = CUP_AFTER_ROUND[n];
       cal.push({ type: 'COPA', stage, title: CUP_TITLES[stage], played: false });
     }
-  });
+  }
   state.calendar = cal;
-  plTeams().forEach(t => { t.pts = 0; t.w = 0; t.d = 0; t.l = 0; t.gf = 0; t.ga = 0; });
+  state.teams.forEach(t => { t.pts = 0; t.w = 0; t.d = 0; t.l = 0; t.gf = 0; t.ga = 0; });
 }
 
 function buildCup() {
   state.cup = { R32: [], R16: [], QF: [], SF: [], F: [] };
-  const ids = shuffle(state.teams.map(t => t.id));
+  const ids = shuffle(cupTeamsList().map(t => t.id));
   for (let i = 0; i < ids.length; i += 2) state.cup.R32.push(newTie(ids[i], ids[i + 1]));
 }
 
@@ -1130,8 +1205,16 @@ function continueNextDay() {
   const item = state.calendar[idx];
 
   if (item.type === 'LIGA') {
-    if (xiCount() < 11) return warnXI();
     const f = item.fixtures.find(isMyFixture);
+    if (!f) {
+      // Rodada sem jogo do seu clube (ex.: Championship depois que a PL acabou)
+      simulateOtherFixtures(item, null);
+      markPlayed(item);
+      saveNow(false);
+      renderAll();
+      return;
+    }
+    if (xiCount() < 11) return warnXI();
     startMatch({ kind: 'LIGA', item, fixture: f, homeId: f.h, awayId: f.a });
   } else if (isAlive(item.stage)) {
     if (xiCount() < 11) return warnXI();
@@ -1159,8 +1242,13 @@ function setNext(idx) {
   const item = state.calendar[idx];
   if (item.type === 'LIGA') {
     const f = item.fixtures.find(isMyFixture);
+    if (!f) {
+      label.textContent = `${item.title} · sem jogo do seu clube`;
+      btn.textContent = 'SIMULAR';
+      return;
+    }
     const home = isMine(f.h);
-    label.textContent = `${item.title.replace('Premier League - ', '')} · vs ${nm(home ? f.a : f.h)} (${home ? 'Casa' : 'Fora'})`;
+    label.textContent = `${item.title} · vs ${nm(home ? f.a : f.h)} (${home ? 'Casa' : 'Fora'})`;
     btn.textContent = 'JOGAR';
   } else if (isAlive(item.stage)) {
     const t = myCupTie(item.stage);
@@ -1466,35 +1554,60 @@ function sellPlayer(id) {
 }
 
 // ---------- Fim e início de temporada ----------
+// Troca os 3 últimos da PL pelos 3 primeiros da Championship
+// Os 3 últimos da PL caem e os 3 primeiros da Championship sobem; o mesmo entre Championship e League One.
+// Nada cai da League One, porque ainda não existe League Two.
+function promotionRelegation() {
+  const plDown = sortTable(plTeams()).slice(-3);
+  const chUp = sortTable(chTeams()).slice(0, 3);
+  const chDown = sortTable(chTeams()).slice(-3);
+  const l1Up = sortTable(leagueTeams('l1')).slice(0, 3);
+  // Calcula tudo antes de trocar, para as tabelas não mudarem no meio
+  plDown.forEach(t => { t.lg = 'ch'; Object.assign(t, tierFigures(t.str, 'ch')); });
+  chUp.forEach(t => { t.lg = 'pl'; Object.assign(t, tierFigures(t.str, 'pl')); });
+  chDown.forEach(t => { t.lg = 'l1'; Object.assign(t, tierFigures(t.str, 'l1')); });
+  l1Up.forEach(t => { t.lg = 'ch'; Object.assign(t, tierFigures(t.str, 'ch')); });
+  return { up: [...chUp, ...l1Up], down: [...plDown, ...chDown] };
+}
+
 function endSeason() {
   if (state.seasonClosed) {
     notify('🏁', 'Temporada encerrada', 'Use "Nova temporada" na aba Clube para continuar.');
     return;
   }
   state.seasonClosed = true;
-  const table = sortedTable();
+  const myLg = tm(state.myId).lg;
+  const table = sortTable(leagueTeams(myLg));
   const pos = table.findIndex(t => t.id === state.myId) + 1;
   const final = state.cup.F[0];
   const cupChamp = !!final && final.winner === state.myId;
-  const bonus = (pos === 1 ? 60e6 : 0) + (cupChamp ? 35e6 : 0);
+  const leagueBonus = pos === 1 ? ({ pl: 60e6, ch: 10e6, l1: 3e6 })[myLg] : 0;
+  const bonus = leagueBonus + (cupChamp ? 35e6 : 0);
   state.money += bonus;
   const me = tm(state.myId);
   state.history.push({
     season: state.season, pos, pts: me.pts, leader: table[0].name,
-    cup: cupChamp, bonus
+    cup: cupChamp, bonus, lg: myLg
   });
+  // Acesso e rebaixamento: 3 da Championship sobem, 3 da PL caem
+  promotionRelegation();
+  const depois = tm(state.myId).lg;
+  const movimento = depois === myLg ? ''
+    : LG_RANK[depois] > LG_RANK[myLg]
+      ? `\nSeu clube subiu para a ${LG_NAME[depois]}!`
+      : `\nSeu clube caiu para a ${LG_NAME[depois]}.`;
   const id = state.nextId++;
   state.inbox.push({
     id, sender: 'Diretoria do Clube', subject: `Balanço da temporada ${state.season}`,
     date: fmtDate(dateOf(state.calendar.length - 1, state.season)),
-    text: `Terminamos em ${pos}º lugar com ${me.pts} pontos.\n${cupChamp ? 'Conquistamos a FA Cup!' : 'Sem título da FA Cup.'}\nPremiações: ${fmtEur(bonus)}.`,
+    text: `Terminamos em ${pos}º lugar na ${LG_NAME[myLg]} com ${me.pts} pontos.\n${cupChamp ? 'Conquistamos a FA Cup!' : 'Sem título da FA Cup.'}\nPremiações: ${fmtEur(bonus)}.${movimento}`,
     read: false
   });
   state.selectedMail = id;
   saveNow(false);
   dialog({
     icon: '🏆', title: `Temporada ${state.season} concluída`,
-    html: `Posição final: <b>${pos}º</b> com ${me.pts} pontos.<br>${cupChamp ? 'Campeão da FA Cup!' : 'Sem título da FA Cup.'}<br>Premiações: <b class="green">${fmtEur(bonus)}</b>`,
+    html: `Posição final: <b>${pos}º</b> na ${LG_NAME[myLg]} com ${me.pts} pontos.<br>${cupChamp ? 'Campeão da FA Cup!' : 'Sem título da FA Cup.'}<br>Premiações: <b class="green">${fmtEur(bonus)}</b>${movimento ? `<br><b>${movimento.trim()}</b>` : ''}`,
     buttons: [
       { label: 'Depois', cls: 'btn-ghost' },
       { label: 'Nova temporada', action: newSeason }
@@ -1518,6 +1631,8 @@ function newSeason() {
     p.goals = 0;
   });
   state.teams.forEach(t => { t.pts = 0; t.w = 0; t.d = 0; t.l = 0; t.gf = 0; t.ga = 0; });
+  // O teto salarial segue a divisão em que o clube está nesta temporada
+  state.wageBudget = tm(state.myId).wageBudget;
   buildMarket();
   buildCalendar();
   buildCup();
@@ -1598,8 +1713,9 @@ function renderHome() {
     let line;
     if (it.type === 'LIGA') {
       const f = it.fixtures.find(isMyFixture);
+      if (!f) return; // rodada sem jogo do seu clube não aparece na lista
       const home = isMine(f.h);
-      line = `${it.title.replace('Premier League - ', 'Liga · ')} — ${home ? 'Casa' : 'Fora'} vs ${nm(home ? f.a : f.h)}`;
+      line = `Liga · ${it.title} — ${home ? 'Casa' : 'Fora'} vs ${nm(home ? f.a : f.h)}`;
     } else {
       const t = myCupTie(it.stage);
       line = t ? `${CUP_TITLES[it.stage]} — vs ${nm(isMine(t.h) ? t.a : t.h)}` : `${CUP_TITLES[it.stage]} — eliminado`;
@@ -1669,7 +1785,10 @@ function renderMarket() {
 }
 
 function renderStandings() {
-  $('table-body').innerHTML = sortedTable().map((c, i) => {
+  const tabela = state.standTab === 'ch' ? sortTable(chTeams())
+    : state.standTab === 'l1' ? sortTable(leagueTeams('l1'))
+    : sortedTable();
+  $('table-body').innerHTML = tabela.map((c, i) => {
     const gd = c.gf - c.ga;
     return `
       <tr class="${isMine(c.id) ? 'me' : ''}">
@@ -1693,7 +1812,7 @@ function renderStandings() {
       <span class="bold">${p.goals}</span>
     </div>`).join('') : '<p class="muted">Ainda sem gols na temporada.</p>';
 
-  $('st-league').hidden = state.standTab !== 'league';
+  $('st-league').hidden = state.standTab === 'cup';
   $('st-cup').hidden = state.standTab !== 'cup';
   setSortChips('#view-standings .seg', 'tab', state.standTab);
   renderCup();
